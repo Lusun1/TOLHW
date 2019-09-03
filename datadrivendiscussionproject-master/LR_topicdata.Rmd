@@ -1,0 +1,264 @@
+## import package and dataset
+```{r}
+library(ggplot2)
+library(lme4)
+library(ResourceSelection)
+library(lmtest) # use to test log likelihood between two models
+comb <- read.csv(file = "comb_df_0830.csv", header = TRUE)
+colnames(comb)
+```
+## pre-process data
+```{r}
+comb['urlBi']<- comb$urlCount > 0
+comb$modal <- comb$MD/comb$WC
+comb$modal[is.na(comb$modal)] <- 0
+comb$userHighFreq<-comb$userHighFreq>0 
+
+comb$toData<- as.logical(comb$toData)
+comb$toTopic<- as.logical(comb$toTopic)
+comb$toDataViz<- as.logical(comb$toDataViz)
+
+comb$toDataTopic <- FALSE
+comb[((comb$toTopic==TRUE)&(comb$toData==TRUE)), "toDataTopic"] <- TRUE
+
+# set platform, topic as factor
+comb$platform <- factor(comb$platform, levels = c('nyt', 'brietbart', 'guardian'))
+xtabs(~platform, comb)
+
+comb$topics <- factor(comb$topics, levels = c('Weather','Energy','CO2'))
+
+# correct data error with interactive
+comb[(comb$article %in% c("guardian_energy_2")),"Interactive"] <- TRUE
+xtabs(~article+Interactive, comb)
+
+# data journalistic style
+comb$Journalistic <- "MultRel"
+
+comb[(comb$article %in% c("guardian_energy_2","breitbart_energy_1","guardian_weather_1","breitbart_weather_1")), "Journalistic"] <- "MultChart"
+
+comb[(comb$article %in% c("guardian_co2_1","breitbart_co2_1","nyt_energy_1","nyt_weather_1","nyt_weather_2")), "Journalistic"] <- "OneChart"
+
+comb$Journalistic <- factor(comb$Journalistic, levels = c("OneChart", "MultRel", "MultChart"))
+
+xtabs(~article+Journalistic, comb)
+
+# change the cosine similarity unit as 1%
+comb$articleCos<- comb$articleCos * 100
+
+# check NA
+apply(is.na(comb),2,sum)
+
+# get log ratio of countable variables: recomms and WC(word count)
+comb$WC <- log(comb$WC+1)
+
+#comb$timeInterval <- log(comb$timeInterval+1)
+comb$timeInterval <- comb$timeInterval > 0
+summary(comb$timeInterval)
+comb$recomms <- log(comb$recomms+1)
+
+```
+# simple model
+```{r}
+simple_model <-   glm(toDataTopic ~ 
+            topics +
+            platform, 
+          data = comb, 
+          family=binomial(link = "logit"))
+summary(simple_model)
+exp(coef(summary(simple_model)))
+hoslem.test(comb$toDataTopic, fitted(simple_model))
+```
+# simple interactions
+```{r}
+simple_inter <-   glm(toDataTopic ~ 
+            topics +
+            platform +
+            topics*platform, 
+          data = comb, 
+          family=binomial(link = "logit"))
+summary(simple_inter)
+exp(coef(summary(simple_inter)))
+anova(simple_model, simple_inter, test="Chisq")
+hoslem.test(comb$toDataTopic, fitted(simple_inter))
+```
+# simple social
+```{r}
+simple_social <-    glm(toDataTopic ~ 
+            topics +
+            platform +
+            topics*platform +
+            timeInterval +
+            recomms + 
+            urlBi +
+            replyPost +
+            articleCos,
+          data = comb, 
+          family=binomial(link = "logit"))
+summary(simple_social)
+exp(coef(summary(simple_social)))
+anova(simple_inter, simple_social, test="Chisq")
+hoslem.test(comb$toDataTopic, fitted(simple_social))
+```
+# simple LIWC
+```{r}
+simple_liwc <-    glm(toDataTopic ~ 
+            topics +
+            platform +
+            WC +
+            topics*platform +
+            timeInterval +
+            recomms + 
+            urlBi +
+            replyPost +
+            articleCos +
+            i +
+            we +
+            you + 
+            modal + 
+            Journalistic +
+            compare, 
+          data = comb, 
+          family=binomial(link = "logit"))
+hoslem.test(comb$toDataTopic, fitted(simple_liwc), g =22)
+summary(simple_liwc)
+exp(coef(summary(simple_liwc)))
+# test the log likelihood using Chisq between two model
+anova(simple_social, simple_liwc, test ="Chisq")
+# test the goodness of fit: Hosmer-Lemeshow Test
+hoslem.test(comb$toDataTopic, fitted(simple_liwc), g =21)
+#Test of individual predictors: Wald Test
+wald.test(b = coef(simple_liwc), Sigma = vcov(simple_liwc), Terms = 16:17) # terms 15:16 means the interaction
+wald.test(b = coef(simple_liwc), Sigma = vcov(simple_liwc), Terms = 19:22) # terms 18:21 means the interaction
+```
+
+```{r}
+# plot
+comb$fit <- predict(simple_liwc, comb)
+comb$pred <- plogis(comb$fit)
+meanLogLik<- comb %>%
+    group_by(platform, topics) %>%
+    summarise(mean=(mean(pred)))
+ggplot(meanLogLik, aes(x = topics, y = mean, color = platform, group = platform)) + 
+  geom_point() + 
+  geom_line() +
+  ylab("mean of likelihood of toDataTopic") + 
+  xlab("topics")
+  
+
+
+```
+
+
+## LR on baseline_topic model on Topic x Data
+```{r}
+Datatopic_baseline<- glmer(toDataTopic ~
+                          platform + 
+                          articleCos +
+                          WC +
+                          (1|topics), 
+                        data = comb, 
+                        family=binomial(link = "logit"))
+summary(Datatopic_baseline)
+exp(coef(summary(Datatopic_baseline)))
+
+```
+## LR Topic x Data social
+```{r}
+Datatopic_social<- glmer(toDataTopic ~
+                          platform + 
+                          articleCos +
+                          WC +
+                          timeInterval +
+                          recomms + 
+                          urlBi +
+                          replyPost +                           
+                          (1|topics), 
+                        data = comb, 
+                        family=binomial(link = "logit"))
+summary(Datatopic_social)
+exp(coef(summary(Datatopic_social)))
+anova(Datatopic_baseline, Datatopic_social)
+
+```
+# include sentiment
+```{r}
+Datatopic_linguisticmodel<-glmer(toDataTopic ~ 
+                            platform +
+                            replyPost +
+                            WC +
+                            articleCos +
+                            number +
+                            quant +
+                            compare + 
+                            urlBi +
+                            i +
+                            we +
+                            you +
+                            they +
+                            (1|topics), 
+                          data = comb, 
+                          family=binomial(link = "logit"))
+summary(Datatopic_linguisticmodel)
+exp(coef(summary(Datatopic_linguisticmodel)))
+anova(Datatopic_social, Datatopic_linguisticmodel)
+```
+# include journalistic
+```{r}
+Datatopic_journalistic<-glmer(toDataTopic ~ 
+                            platform +
+                            replyPost +
+                            WC +
+                            articleCos +
+                            number +
+                            quant +
+                            compare + 
+                            urlBi +
+                            i +
+                            we +
+                            you +
+                            they +
+                            Journalistic +
+                            (1|topics), 
+                          data = comb, 
+                          family=binomial(link = "logit"))
+summary(Datatopic_journalistic)
+exp(coef(summary(Datatopic_journalistic)))
+anova(Datatopic_linguisticmodel, Datatopic_journalistic)
+
+```
+## test the prediction accuracy
+```{r}
+# use full dataset to predict
+combnew<- comb
+combnew['predict'] <- predict(simple_liwc, combnew)
+combnew['predict']<- combnew$predict> 0
+pred = combnew$predict> 0
+#print confusion matrix
+confusionMatrix(data = pred,combnew$toDataTopic)
+#combnew['accuracy'] <- combnew['predict'] == combnew$toTopic
+#accuracy <- xtabs(~combnew$accuracy,combnew)['TRUE']/ length(combnew$toDataTopic)
+#print(paste0("accuracy with no CV: ", accuracy))
+
+# set parameters of 10-fold cv
+nrfolds = 10
+accuracy.sum = 0
+folds <- rep_len(1:10, nrow(combnew))
+# randomize the dataset
+comb_test <- combnew[sample(1:nrow(combnew)), ]
+# begin loop on 10-fold cv
+for(k in 1:nrfolds) {
+    # actual split of the data
+    fold <- which(folds == k)
+    trainingData <- comb_test[-fold,]
+    testData <- comb_test[fold,]
+    testData$preds <- predict(simple_liwc, testData)  # predicted values
+    testData$preds <- testData$preds > 0
+    #print confusion matrix
+    print(confusionMatrix(data = testData$preds,testData$toDataTopic))
+    # print(paste0("accuracy of cv-fold: ", 
+    #             xtabs(~testData$accuracy,testData)['TRUE']/ length(testData$toDataTopic)))
+    # accuracy.sum = accuracy.sum + xtabs(~testData$accuracy,testData)['TRUE']/ length(testData$toDataTopic)
+}
+#print(paste0("average accuracy of cv-fold: ", accuracy.sum/k))
+
+```
